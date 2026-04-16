@@ -7,11 +7,18 @@ export interface Prioridad {
 }
 
 export interface DiaData {
-  fecha: string          // "2026-04-16"
+  fecha: string
   prioridades: Prioridad[]
-  ordenHecho: boolean    // timer de 10 min completado
-  rachaActual: number    // días seguidos que abriste la app
-  ultimaApertura: string // fecha de la última apertura "2026-04-15"
+  ordenHecho: boolean
+  rachaActual: number
+  ultimaApertura: string
+}
+
+export interface HistorialEntry {
+  fecha: string
+  completadas: number
+  total: number
+  ordenHecho: boolean
 }
 
 // ─── Storage keys ────────────────────────────────────────────────────────────
@@ -19,6 +26,7 @@ export interface DiaData {
 const KEY_DIA = 'hazlo_dia'
 const KEY_RACHA = 'hazlo_racha'
 const KEY_ULTIMA = 'hazlo_ultima_apertura'
+const KEY_HISTORIAL = 'hazlo_historial'
 
 // ─── Helpers de fecha ────────────────────────────────────────────────────────
 
@@ -35,6 +43,11 @@ export function fechaLegible(fecha: string): string {
   })
 }
 
+export function diaSemanaCorto(fecha: string): string {
+  const d = new Date(fecha + 'T12:00:00')
+  return d.toLocaleDateString('es-PR', { weekday: 'short' }).slice(0, 2).toUpperCase()
+}
+
 function diffDias(a: string, b: string): number {
   const da = new Date(a + 'T12:00:00')
   const db = new Date(b + 'T12:00:00')
@@ -49,7 +62,6 @@ export function calcularRacha(): number {
   const rachaGuardada = parseInt(localStorage.getItem(KEY_RACHA) || '0', 10)
 
   if (!ultima) {
-    // Primera vez
     localStorage.setItem(KEY_ULTIMA, hoyStr)
     localStorage.setItem(KEY_RACHA, '1')
     return 1
@@ -57,18 +69,52 @@ export function calcularRacha(): number {
 
   const diff = diffDias(ultima, hoyStr)
 
-  if (diff === 0) return rachaGuardada // ya abrió hoy
+  if (diff === 0) return rachaGuardada
   if (diff === 1) {
-    // Día siguiente: racha sigue
     const nueva = rachaGuardada + 1
     localStorage.setItem(KEY_ULTIMA, hoyStr)
     localStorage.setItem(KEY_RACHA, String(nueva))
     return nueva
   }
-  // Rompió racha — pero sin drama: empieza en 1 de nuevo
   localStorage.setItem(KEY_ULTIMA, hoyStr)
   localStorage.setItem(KEY_RACHA, '1')
   return 1
+}
+
+// ─── Historial ───────────────────────────────────────────────────────────────
+
+export function guardarEnHistorial(dia: DiaData): void {
+  const raw = localStorage.getItem(KEY_HISTORIAL)
+  const historial: Record<string, HistorialEntry> = raw ? JSON.parse(raw) : {}
+
+  historial[dia.fecha] = {
+    fecha: dia.fecha,
+    completadas: dia.prioridades.filter((p) => p.hecha).length,
+    total: dia.prioridades.length,
+    ordenHecho: dia.ordenHecho,
+  }
+
+  // Guardar solo los últimos 30 días
+  const fechas = Object.keys(historial).sort().slice(-30)
+  const limpio: Record<string, HistorialEntry> = {}
+  fechas.forEach((f) => (limpio[f] = historial[f]))
+  localStorage.setItem(KEY_HISTORIAL, JSON.stringify(limpio))
+}
+
+export function cargarHistorial7Dias(): HistorialEntry[] {
+  const raw = localStorage.getItem(KEY_HISTORIAL)
+  const historial: Record<string, HistorialEntry> = raw ? JSON.parse(raw) : {}
+
+  const resultado: HistorialEntry[] = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    const fecha = d.toISOString().slice(0, 10)
+    resultado.push(
+      historial[fecha] ?? { fecha, completadas: 0, total: 3, ordenHecho: false }
+    )
+  }
+  return resultado
 }
 
 // ─── Día de hoy ──────────────────────────────────────────────────────────────
@@ -88,12 +134,17 @@ export function cargarDia(): DiaData {
     if (guardado.fecha === hoyStr) {
       return guardado
     }
-    // Es un día nuevo: las prioridades "mañana" pasan a ser las de hoy
-    // Guardamos las de mañana que el usuario escribió ayer
+    // Día nuevo: archivar el anterior en historial
+    guardarEnHistorial(guardado)
+
     const mananaRaw = localStorage.getItem('hazlo_manana')
     const manana: Prioridad[] = mananaRaw ? JSON.parse(mananaRaw) : []
     const nuevasPrioridades =
       manana.length > 0 ? manana.map((p) => ({ ...p, hecha: false })) : SEED_PRIORIDADES
+
+    // Limpiar mañana ya que pasaron a ser el día de hoy
+    localStorage.removeItem('hazlo_manana')
+
     const nuevo: DiaData = {
       fecha: hoyStr,
       prioridades: nuevasPrioridades,
@@ -105,7 +156,6 @@ export function cargarDia(): DiaData {
     return nuevo
   }
 
-  // Primera vez absoluta
   const primero: DiaData = {
     fecha: hoyStr,
     prioridades: SEED_PRIORIDADES,
@@ -119,6 +169,8 @@ export function cargarDia(): DiaData {
 
 export function guardarDia(dia: DiaData): void {
   localStorage.setItem(KEY_DIA, JSON.stringify(dia))
+  // Actualizar historial del día actual en tiempo real
+  guardarEnHistorial(dia)
 }
 
 // ─── Prioridades de mañana ───────────────────────────────────────────────────
